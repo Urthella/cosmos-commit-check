@@ -20,6 +20,8 @@ const LAST = Number(blocks.at(-1)!.header.height);
 let unwrapped = false;
 let rateLimits = 0;
 let badSignature: number | undefined;
+/** Asked for this height, the node sends the block after. */
+let wrongHeight: number | undefined;
 
 const server = createServer((request, response) => {
   const url = new URL(request.url!, "http://x");
@@ -30,7 +32,7 @@ const server = createServer((request, response) => {
   }
   const ok = (result: unknown) => reply(200, unwrapped ? result : { jsonrpc: "2.0", id: -1, result });
   const height = url.searchParams.get("height");
-  const block = byHeight.get(Number(height));
+  const block = byHeight.get(Number(height) + (url.pathname === "/commit" && wrongHeight === Number(height) ? 1 : 0));
   if (url.pathname === "/commit" && !height) return ok({ signed_header: { header: { height: String(LAST + 1) } } });
   if (!block) return reply(200, { jsonrpc: "2.0", id: -1, error: { code: -32603, message: "Internal error", data: `height ${height} is not available, lowest height is ${blocks[0].header.height}` } });
   if (url.pathname === "/commit") {
@@ -95,6 +97,38 @@ test("a signature that doesn't verify exits 1 and names it", async () => {
   }
 });
 
+test("--skip trusts the first block from an older one's validators", async () => {
+  const { code, stdout, stderr } = await run("--blocks", "1", "--skip", "2");
+  assert.equal(code, 0, stderr);
+  assert.match(stdout, /\n  skip: validators holding \d+\.\d\d% of block 34,026,661's voting power, \d+ of its 180, signed block 34,026,663, 0\.\d hours later: more than the 1\/3 a light client needs to skip the 1 blocks between\n/);
+  const json = JSON.parse((await run("--blocks", "1", "--skip", "2", "--json")).stdout);
+  assert.equal(json.skip.from, 34_026_661);
+  assert.equal(json.skip.ok, true);
+});
+
+test("a trusted block that fails its own checks exits 1", async () => {
+  badSignature = LAST - 2;
+  try {
+    const { code, stdout } = await run("--blocks", "1", "--skip", "2");
+    assert.equal(code, 1, stdout);
+    assert.match(stdout, /signed block 34,026,663, 0\.\d hours later: but a light client can't skip to it:\n    block 34,026,661: signature 0, from [0-9A-F]{40}, doesn't verify\n/);
+    assert.equal(JSON.parse((await run("--blocks", "1", "--skip", "2", "--json")).stdout).skip.ok, false);
+  } finally {
+    badSignature = undefined;
+  }
+});
+
+test("a node that sends a block other than the one asked for exits 2", async () => {
+  wrongHeight = LAST - 2;
+  try {
+    const { code, stderr } = await run("--blocks", "1", "--skip", "2");
+    assert.equal(code, 2);
+    assert.match(stderr, /asked for block 34026661, the node sent block 34026662/);
+  } finally {
+    wrongHeight = undefined;
+  }
+});
+
 test("a node that rate-limits is asked again", async () => {
   rateLimits = 2;
   const { code, stderr } = await run("--blocks", "1");
@@ -106,10 +140,13 @@ test("a height the node has pruned exits 2 with its reason", async () => {
   const { code, stderr } = await run("--blocks", "4");
   assert.equal(code, 2);
   assert.match(stderr, /cosmos-commit-check: \/commit\?height=34026660: Internal error: height 34026660 is not available/);
+  const skipped = await run("--blocks", "1", "--skip", "3");
+  assert.equal(skipped.code, 2);
+  assert.match(skipped.stderr, /height 34026660 is not available/);
 });
 
 test("bad arguments and an unreachable node exit 2", async () => {
-  for (const args of [["--blocks", "0"], ["--blocks", "51"], ["--blocks", "few"], ["--depth", "2"]]) {
+  for (const args of [["--blocks", "0"], ["--blocks", "51"], ["--blocks", "few"], ["--depth", "2"], ["--skip", "-1"], ["--skip", "1e9"]]) {
     const bad = await run(...args);
     assert.equal(bad.code, 2, `${args}: ${bad.stderr}`);
     assert.match(bad.stderr, /usage: cosmos-commit-check/);

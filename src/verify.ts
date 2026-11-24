@@ -87,6 +87,52 @@ export interface BlockResult {
   problems: string[];
 }
 
+const totalPower = (validators: Validator[]) => validators.reduce((sum, v) => sum + BigInt(v.voting_power), 0n);
+
+export interface Trust {
+  /** Voting power, in the trusted set, of its validators whose votes for the newer block verify. */
+  power: bigint;
+  total: bigint;
+  signers: number;
+  problems: string[];
+  /** No problems, and more than 1/3: at least one honest validator vouches for the newer block. */
+  ok: boolean;
+}
+
+/**
+ * CometBFT's VerifyNonAdjacent checks: the newer block is on the trusted block's chain, at a
+ * later height and time, and VerifyCommitLightTrusting at a trust level of 1/3 holds. That takes
+ * the votes for it from validators in the trusted set, checked with that set's keys and the
+ * trusted chain's ID; as there, a second vote or one that doesn't verify fails it.
+ */
+export function trusting(trusted: SignedBlock, untrusted: SignedBlock): Trust {
+  const [t, u] = [trusted.header, untrusted.header];
+  const result: Trust = { power: 0n, total: totalPower(trusted.validators), signers: 0, problems: [], ok: false };
+  if (u.chain_id !== t.chain_id) result.problems.push(`block ${u.height} is on ${u.chain_id}, not ${t.chain_id}`);
+  if (BigInt(u.height) <= BigInt(t.height)) result.problems.push(`block ${u.height} isn't after block ${t.height}`);
+  if (Date.parse(u.time) <= Date.parse(t.time)) result.problems.push(`block ${u.height}'s time isn't after block ${t.height}'s`);
+  const known = new Map(trusted.validators.map((v) => [v.address, v]));
+  const seen = new Set<string>();
+  for (const sig of untrusted.commit.signatures) {
+    if (sig.block_id_flag !== FOR_BLOCK) continue;
+    const v = known.get(sig.validator_address);
+    if (!v) continue;
+    if (seen.has(v.address)) {
+      result.problems.push(`a second vote from ${v.address}`);
+      continue;
+    }
+    seen.add(v.address);
+    if (!sig.signature || !verifies(ed25519Key(v), voteSignBytes(untrusted.commit, sig, t.chain_id), Buffer.from(sig.signature, "base64"))) {
+      result.problems.push(`the vote from ${v.address} doesn't verify`);
+      continue;
+    }
+    result.power += BigInt(v.voting_power);
+    result.signers++;
+  }
+  result.ok = !result.problems.length && result.power * 3n > result.total;
+  return result;
+}
+
 /** What's wrong with `block` following `prev`: it must name prev's hash, and the validators prev said come next. */
 export function links(prev: SignedBlock, block: SignedBlock): string[] {
   const problems: string[] = [];
@@ -107,7 +153,7 @@ export function verifyBlock({ header, commit, validators }: SignedBlock): BlockR
   const validators_ = setHash === header.validators_hash;
   if (!validators_) problems.push(`the validator set hashes to ${setHash}, but the header names ${header.validators_hash}`);
 
-  const result: BlockResult = { height: Number(header.height), checks: { header: header_, validators: validators_, signatures: true, quorum: false }, signed: 0, nil: 0, absent: 0, signedPower: 0n, totalPower: validators.reduce((sum, v) => sum + BigInt(v.voting_power), 0n), problems };
+  const result: BlockResult = { height: Number(header.height), checks: { header: header_, validators: validators_, signatures: true, quorum: false }, signed: 0, nil: 0, absent: 0, signedPower: 0n, totalPower: totalPower(validators), problems };
   if (commit.signatures.length !== validators.length) {
     result.checks.signatures = false;
     problems.push(`${commit.signatures.length} commit signatures for ${validators.length} validators`);

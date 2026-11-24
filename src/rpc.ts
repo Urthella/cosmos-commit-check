@@ -81,6 +81,7 @@ export class Rpc {
 
   async block(height: number): Promise<SignedBlock> {
     const { signed_header } = await this.get<{ signed_header: { header: Header; commit: Commit } }>(`/commit?height=${height}`);
+    if (Number(signed_header.header.height) !== height) throw new Error(`asked for block ${height}, the node sent block ${signed_header.header.height}`);
     const validators: Validator[] = [];
     for (let page = 1; ; page++) {
       const r = await this.get<{ validators: Validator[]; total: string }>(`/validators?height=${height}&page=${page}&per_page=${PER_PAGE}`);
