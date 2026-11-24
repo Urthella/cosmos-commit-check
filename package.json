@@ -1,0 +1,22 @@
+{
+  "name": "cosmos-commit-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Checks Cosmos chains block by block the way a light client does: header hash, validator set hash, and the ed25519 signatures of more than 2/3 of the voting power",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "cosmos-commit-check": "src/main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
