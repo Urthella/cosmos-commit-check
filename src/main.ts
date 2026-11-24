@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // cosmos-commit-check: checks a Cosmos chain's latest blocks the way a CometBFT light client does:
 // the header's hash, the validator set's hash, every vote's ed25519 signature, and that more than
-// 2/3 of the voting power signed. Exits 1 if a block fails a check, 2 if it couldn't check.
+// 2/3 of the voting power signed; with --skip, whether a light client could jump to the first
+// block from an older one. Exits 1 if a block or the skip fails a check, 2 if it couldn't check.
 
 import { parseArgs } from "node:util";
 
@@ -44,7 +45,6 @@ async function main(): Promise<number> {
     const rpc = new Rpc(values.rpc);
     const checked = await collect(rpc, blocks);
     const from = Number(checked[0].header.height) - skip;
-    if (skip && from < 1) throw new Error(`--skip ${skip} goes back past block 1`);
     const report = audit(checked, skip ? await rpc.block(from) : undefined);
     console.log(values.json ? JSON.stringify(report, null, 2) : describe(report));
     return exitCode(report);

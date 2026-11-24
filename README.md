@@ -13,7 +13,7 @@ node, with no SDK. For each block, `cosmos-commit-check`:
 6. with `--skip N`, **checks a light client could jump to the first block** from one N blocks
    earlier, without the headers between.
 
-It exits 1 if a block fails a check.
+It exits 1 if a block, or the skip, fails a check.
 
 ## Why
 
@@ -30,10 +30,11 @@ every signature of real blocks:
 - **Seven more chains** pass every check from their public nodes: Osmosis, Celestia, dYdX, Akash,
   Injective, Kava and Sei. Sei's fork of CometBFT answers without the JSON-RPC envelope, which is
   handled.
-- **Validator sets barely move:** a light client can skip from a trusted block to a much later
-  one if validators holding more than 1/3 of the trusted block's voting power signed the later
-  one. On Cosmos Hub, validators holding 98.45% of the voting power of a block 110 days and 1.65
-  million blocks back still signed today's.
+- **Validator sets barely move:** a light client may skip from a trusted block to a later one if
+  validators holding more than 1/3 of the trusted block's voting power signed the later one. On
+  Cosmos Hub, validators holding 98.45% of the voting power of a block 110 days and 1.65 million
+  blocks back still signed today's. The power test alone would allow that jump; a light client's
+  trusting period, 14 days there, wouldn't.
 
 ## Quick start
 
@@ -58,11 +59,11 @@ node src/main.ts --blocks 20
   chain's works, `https://osmosis-rpc.publicnode.com` for one.
 - `--blocks N` sets how many blocks to check, ending one before the newest, whose commit may still
   be gathering votes: 3 by default, up to 50.
-- `--skip N` also fetches the block N before the first one checked, checks it like the rest, and
-  checks whether a light client could trust the first block straight from it:
+- `--skip N` also fetches the block N before the first one checked, up to 10,000,000, checks it
+  like the rest, and checks whether a light client could trust the first block straight from it:
 
   ```text
-  skip: validators holding 98.45% of block 32,376,860's voting power, 156 of its 180, signed block 34,026,860, 110 days later: more than the 1/3 a light client needs to skip the 1,649,999 blocks between
+  skip: validators holding 98.45% of block 32,377,030's voting power, 156 of its 180, signed block 34,027,030, 110 days later: more than the 1/3 a light client needs to skip the 1,649,999 blocks between
   ```
 
 - `--json` prints the report as JSON.
@@ -86,11 +87,15 @@ arguments.
   - the type, the height and round as `sfixed64`, the block ID (left out for a vote for nil), the
     vote's own time and the chain ID;
   - a vote for nil must verify too, but its power doesn't count toward the block.
-- **With `--skip`, does what CometBFT's `VerifyCommitLightTrusting` does** at a trust level of
-  1/3. It takes the first checked block's votes for the block from validators in the older
-  block's set, verifies each with the key that set gave it, and counts each validator once. Their
-  power in the older set must be more than 1/3 of its total, so at least one honest validator
-  vouches for the jump.
+- **With `--skip`, does what CometBFT's `VerifyNonAdjacent` does**, short of the trusting period:
+  - The first checked block must be on the older block's chain, at a later height and time.
+  - Then `VerifyCommitLightTrusting` at a trust level of 1/3: the first block's votes for it from
+    validators in the older block's set, each verified with the key that set gave it and the
+    older chain's ID.
+  - Their power in the older set must be more than 1/3 of its total, so at least one honest
+    validator vouches for the jump.
+  - As in CometBFT, a second vote from a validator, or a vote that doesn't verify, fails it.
+- **The node must send the block asked for:** a reply for another height exits 2.
 
 ## How it's checked
 
@@ -111,10 +116,13 @@ arguments.
   - pruned heights, bad arguments and an unreachable node exit 2.
 - **Skipping:**
   - the trusted set's signers of a later saved block carry the power the test adds up;
-  - signers outside that set, a forged vote, a second vote and a vote for nil don't count;
+  - signers outside that set and a vote for nil don't count;
+  - a forged vote or a second vote fails the skip, and so do another chain, an earlier height and
+    an earlier time;
   - exactly 1/3 isn't enough;
-  - end to end, `--skip` reports the jump, and a trusted block that fails its own checks exits 1.
-- **Mutation testing:** thirty-six deliberate bugs were planted one at a time, and the tests
+  - end to end, `--skip` reports the jump; a trusted block that fails its own checks exits 1; a
+    node that sends another block exits 2.
+- **Mutation testing:** forty-three deliberate bugs were planted one at a time, and the tests
   caught every one.
 - **Live**, on 2026-11-24, every block passed:
   - 20 on Cosmos Hub, and two each on Osmosis, Celestia, dYdX, Akash, Injective, Kava and Sei;
