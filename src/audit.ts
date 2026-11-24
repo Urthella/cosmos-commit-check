@@ -1,7 +1,7 @@
 // Checks a chain's latest blocks one by one, and each against the one before.
 
 import type { Rpc, SignedBlock } from "./rpc.ts";
-import { type BlockResult, links, verifyBlock } from "./verify.ts";
+import { type BlockResult, links, trusting, verifyBlock } from "./verify.ts";
 
 export async function collect(rpc: Rpc, count: number): Promise<SignedBlock[]> {
   // The newest commit can still be gathering votes: stop one block short of it.
@@ -19,10 +19,13 @@ export interface Report {
   blocks: (Omit<BlockResult, "signedPower" | "totalPower"> & { signedPower: string; totalPower: string })[];
   /** Problems linking each block to the one before. */
   links: string[];
+  /** With --skip: whether the first block can be trusted straight from an older one. */
+  skip?: { from: number; to: number; hours: number; power: string; total: string; validators: number; of: number; ok: boolean; problems: string[] };
 }
 
-export function audit(blocks: SignedBlock[]): Report {
+export function audit(blocks: SignedBlock[], trusted?: SignedBlock): Report {
   const results = blocks.map((b) => verifyBlock(b));
+  const skip = trusted && { own: verifyBlock(trusted), trust: trusting(trusted, blocks[0]) };
   return {
     chainId: blocks[0].header.chain_id,
     first: results[0].height,
@@ -30,10 +33,22 @@ export function audit(blocks: SignedBlock[]): Report {
     validators: blocks.at(-1)!.validators.length,
     blocks: results.map((r) => ({ ...r, signedPower: String(r.signedPower), totalPower: String(r.totalPower) })),
     links: blocks.slice(1).flatMap((b, i) => links(blocks[i], b)),
+    skip: skip && {
+      from: skip.own.height,
+      to: results[0].height,
+      hours: (Date.parse(blocks[0].header.time) - Date.parse(trusted!.header.time)) / 3_600_000,
+      power: String(skip.trust.power),
+      total: String(skip.trust.total),
+      validators: skip.trust.validators,
+      of: trusted!.validators.length,
+      ok: skip.trust.ok,
+      // The trusted block is checked like the rest: trusting a block that fails is no help.
+      problems: skip.own.problems,
+    },
   };
 }
 
-export const exitCode = (report: Report) => (report.links.length || report.blocks.some((b) => b.problems.length) ? 1 : 0);
+export const exitCode = (report: Report) => (report.links.length || report.blocks.some((b) => b.problems.length) || (report.skip && (!report.skip.ok || report.skip.problems.length)) ? 1 : 0);
 
 const CHECKS = {
   header: "the header hashes to the block ID its commit signs",
@@ -55,6 +70,14 @@ export function describe(report: Report): string {
   for (const p of [...report.blocks.flatMap((b) => b.problems.map((x) => `block ${number(b.height)}: ${x}`)), ...report.links].slice(0, 10)) lines.push(`    ${p}`);
   const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)];
   const share = Math.min(...report.blocks.map((b) => Number((BigInt(b.signedPower) * 10_000n) / BigInt(b.totalPower)) / 100));
+  if (report.skip) {
+    const s = report.skip;
+    const share = (Number((BigInt(s.power) * 10_000n) / BigInt(s.total)) / 100).toFixed(2);
+    const gap = s.hours < 48 ? `${s.hours.toFixed(1)} hours` : `${Math.round(s.hours / 24)} days`;
+    const verdict = s.ok ? `more than the 1/3 a light client needs to skip the ${number(s.to - s.from - 1)} blocks between` : "not more than 1/3, so a light client can't skip to it";
+    lines.push(`  skip: validators holding ${share}% of block ${number(s.from)}'s voting power, ${s.validators} of its ${s.of}, signed block ${number(s.to)}, ${gap} later: ${verdict}`);
+    for (const p of s.problems.slice(0, 5)) lines.push(`    block ${number(s.from)}: ${p}`);
+  }
   lines.push(`  votes: a median ${median(report.blocks.map((b) => b.signed))} validators signed each block, ${report.blocks.reduce((s, b) => s + b.nil, 0)} voted nil; the least signed power was ${share.toFixed(2)}%`);
   return lines.join("\n");
 }

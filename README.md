@@ -9,7 +9,9 @@ node, with no SDK. For each block, `cosmos-commit-check`:
 3. **verifies every vote's ed25519 signature**, over the bytes CometBFT signs, with its
    validator's key;
 4. **checks the votes for the block carry more than 2/3 of the voting power**;
-5. **checks each block builds on the one before**, with the validators that block named.
+5. **checks each block builds on the one before**, with the validators that block named;
+6. with `--skip N`, **checks a light client could jump to the first block** from one N blocks
+   earlier, without the headers between.
 
 It exits 1 if a block fails a check.
 
@@ -28,6 +30,10 @@ every signature of real blocks:
 - **Seven more chains** pass every check from their public nodes: Osmosis, Celestia, dYdX, Akash,
   Injective, Kava and Sei. Sei's fork of CometBFT answers without the JSON-RPC envelope, which is
   handled.
+- **Validator sets barely move:** a light client can skip from a trusted block to a much later
+  one if validators holding more than 1/3 of the trusted block's voting power signed the later
+  one. On Cosmos Hub, validators holding 98.45% of the voting power of a block 110 days and 1.65
+  million blocks back still signed today's.
 
 ## Quick start
 
@@ -52,10 +58,18 @@ node src/main.ts --blocks 20
   chain's works, `https://osmosis-rpc.publicnode.com` for one.
 - `--blocks N` sets how many blocks to check, ending one before the newest, whose commit may still
   be gathering votes: 3 by default, up to 50.
+- `--skip N` also fetches the block N before the first one checked, checks it like the rest, and
+  checks whether a light client could trust the first block straight from it:
+
+  ```text
+  skip: validators holding 98.45% of block 32,376,860's voting power, 156 of its 180, signed block 34,026,860, 110 days later: more than the 1/3 a light client needs to skip the 1,649,999 blocks between
+  ```
+
 - `--json` prints the report as JSON.
 
-Exit codes: 0 when every check passes, 1 when a block fails one, and 2 when it couldn't check: a
-node that has pruned the heights, a key type other than ed25519, or bad arguments.
+Exit codes: 0 when every check passes, 1 when a block or the skip fails one, and 2 when it
+couldn't check: a node that has pruned the heights, a key type other than ed25519, or bad
+arguments.
 
 ## What it does
 
@@ -72,6 +86,11 @@ node that has pruned the heights, a key type other than ed25519, or bad argument
   - the type, the height and round as `sfixed64`, the block ID (left out for a vote for nil), the
     vote's own time and the chain ID;
   - a vote for nil must verify too, but its power doesn't count toward the block.
+- **With `--skip`, does what CometBFT's `VerifyCommitLightTrusting` does** at a trust level of
+  1/3. It takes the first checked block's votes for the block from validators in the older
+  block's set, verifies each with the key that set gave it, and counts each validator once. Their
+  power in the older set must be more than 1/3 of its total, so at least one honest validator
+  vouches for the jump.
 
 ## How it's checked
 
@@ -90,10 +109,16 @@ node that has pruned the heights, a key type other than ed25519, or bad argument
   - a signature that doesn't verify exits 1;
   - a rate-limited node is asked again;
   - pruned heights, bad arguments and an unreachable node exit 2.
-- **Mutation testing:** twenty-eight deliberate bugs were planted one at a time, and the tests
+- **Skipping:**
+  - the trusted set's signers of a later saved block carry the power the test adds up;
+  - signers outside that set, a forged vote, a second vote and a vote for nil don't count;
+  - exactly 1/3 isn't enough;
+  - end to end, `--skip` reports the jump, and a trusted block that fails its own checks exits 1.
+- **Mutation testing:** thirty-six deliberate bugs were planted one at a time, and the tests
   caught every one.
-- **Live**, on 2026-11-24, every block passed: 20 on Cosmos Hub, and two each on Osmosis,
-  Celestia, dYdX, Akash, Injective, Kava and Sei.
+- **Live**, on 2026-11-24, every block passed:
+  - 20 on Cosmos Hub, and two each on Osmosis, Celestia, dYdX, Akash, Injective, Kava and Sei;
+  - skips of 1.65 million blocks on Cosmos Hub and 100,000 on Osmosis.
 
 ## Limits
 
@@ -104,6 +129,9 @@ node that has pruned the heights, a key type other than ed25519, or bad argument
 - **Each block is checked against the validator set the node serves for it**, and that set is
   checked against the header's hash. Following a chain from a block you already trust is what
   makes that sound.
+- **`--skip` doesn't enforce a trusting period.** A real light client only trusts a block younger
+  than its trusting period, usually two-thirds of the unbonding period: 14 of Cosmos Hub's 21
+  days. Past that, validators could have left with their stake and signed something else.
 - **No saved block went past round 0,** so the round in a vote's sign bytes is only ever zero in
   the tests.
 

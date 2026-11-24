@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { audit, collect, describe, exitCode } from "./audit.ts";
 import { Rpc } from "./rpc.ts";
 
-const USAGE = "usage: cosmos-commit-check [--rpc URL] [--blocks N] [--json]";
+const USAGE = "usage: cosmos-commit-check [--rpc URL] [--blocks N] [--skip N] [--json]";
 
 async function main(): Promise<number> {
   let values;
@@ -17,6 +17,7 @@ async function main(): Promise<number> {
       options: {
         rpc: { type: "string", default: "https://cosmos-rpc.publicnode.com" },
         blocks: { type: "string", default: "3" },
+        skip: { type: "string", default: "0" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -34,8 +35,17 @@ async function main(): Promise<number> {
     console.error(`--blocks must be 1 to 50: ${values.blocks}\n${USAGE}`);
     return 2;
   }
+  const skip = Number(values.skip);
+  if (!Number.isInteger(skip) || skip < 0 || skip > 10_000_000) {
+    console.error(`--skip must be 0 to 10,000,000: ${values.skip}\n${USAGE}`);
+    return 2;
+  }
   try {
-    const report = audit(await collect(new Rpc(values.rpc), blocks));
+    const rpc = new Rpc(values.rpc);
+    const checked = await collect(rpc, blocks);
+    const from = Number(checked[0].header.height) - skip;
+    if (skip && from < 1) throw new Error(`--skip ${skip} goes back past block 1`);
+    const report = audit(checked, skip ? await rpc.block(from) : undefined);
     console.log(values.json ? JSON.stringify(report, null, 2) : describe(report));
     return exitCode(report);
   } catch (error) {

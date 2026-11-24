@@ -87,6 +87,35 @@ export interface BlockResult {
   problems: string[];
 }
 
+export interface Trust {
+  /** Voting power, in the trusted set, of its validators whose votes for the newer block verify. */
+  power: bigint;
+  total: bigint;
+  validators: number;
+  /** More than 1/3: at least one honest validator vouches for the newer block. */
+  ok: boolean;
+}
+
+/**
+ * CometBFT's VerifyCommitLightTrusting at a trust level of 1/3: the votes for `untrusted` from
+ * validators in `trusted`'s set, verified with the keys that set gave them, each counted once.
+ */
+export function trusting(trusted: SignedBlock, untrusted: SignedBlock): Trust {
+  const known = new Map(trusted.validators.map((v) => [v.address, v]));
+  const seen = new Set<string>();
+  const result: Trust = { power: 0n, total: trusted.validators.reduce((sum, v) => sum + BigInt(v.voting_power), 0n), validators: 0, ok: false };
+  for (const sig of untrusted.commit.signatures) {
+    const v = known.get(sig.validator_address);
+    if (sig.block_id_flag !== FOR_BLOCK || !v || seen.has(v.address) || !sig.signature) continue;
+    seen.add(v.address);
+    if (!verifies(ed25519Key(v), voteSignBytes(untrusted.commit, sig, untrusted.header.chain_id), Buffer.from(sig.signature, "base64"))) continue;
+    result.power += BigInt(v.voting_power);
+    result.validators++;
+  }
+  result.ok = result.power * 3n > result.total;
+  return result;
+}
+
 /** What's wrong with `block` following `prev`: it must name prev's hash, and the validators prev said come next. */
 export function links(prev: SignedBlock, block: SignedBlock): string[] {
   const problems: string[] = [];
